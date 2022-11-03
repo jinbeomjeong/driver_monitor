@@ -132,6 +132,7 @@ dataset
 # backend network
 PIPNet
 L2CS_Net
+L2CS-Net
 
 # pycharm environment
 .idea
