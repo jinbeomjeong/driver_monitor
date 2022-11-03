@@ -94,10 +94,9 @@ if enable_gaze:
     saved_state_dict = torch.load("./L2CS_Net/snapshot/L2CSNet_gaze360.pkl", map_location=device)
     gaze_net.load_state_dict(saved_state_dict)
     gaze_net.eval()
-
-softmax = nn.Softmax(dim=1).to(device)
-idx_tensor = [idx for idx in range(90)]
-idx_tensor = torch.FloatTensor(idx_tensor).to(device)
+    softmax = nn.Softmax(dim=1).to(device)
+    idx_tensor = [idx for idx in range(90)]
+    idx_tensor = torch.FloatTensor(idx_tensor).to(device)
 
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 preprocess = transforms.Compose([transforms.Resize((input_size, input_size)), transforms.ToTensor(), normalize])
