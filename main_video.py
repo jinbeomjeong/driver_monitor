@@ -1,36 +1,29 @@
-import cv2
-import os
-import sys
-import numpy as np
-import pickle
-import importlib
-import threading
-from math import floor
-from PIPNet.FaceBoxesV2.faceboxes_detector import *
-import time
-import torch
-import torch.nn as nn
-import torch.nn.parallel
-import torch.optim as optim
-import torch.utils.data
-import torch.nn.functional as F
+import sys, os, threading
 from torch.autograd import Variable
 import torchvision
 import torchvision.transforms as transforms
-# from torchvision import transforms
-import torchvision.datasets as datasets
-import torchvision.models as models
+from scipy.spatial import distance
+from pandas import DataFrame
+from app_utils.accessory_lib import system_info
+
+default_path = os.path.normpath(os.path.abspath(__file__)).split(os.sep)[0:-1]
+facebox_path = default_path[:]
+facebox_path.append('PIPNet/FaceBoxesV2/')
+facebox_path = '/'.join(facebox_path)
+sys.path.append(facebox_path)
+
+from PIPNet.FaceBoxesV2.faceboxes_detector import FaceBoxesDetector
 from PIPNet.lib.networks import *
-import PIPNet.lib.data_utils
 from PIPNet.lib.functions import *
-from PIPNet.lib.mobilenetv3 import mobilenetv3_large
+
+l2cs_path = default_path
+l2cs_path.append('L2CS_Net/')
+l2cs_path = '/'.join(l2cs_path)
+sys.path.append(l2cs_path)
+
 from L2CS_Net.model import L2CS
 from L2CS_Net.utils import draw_gaze
-from PIL import Image
-from scipy.spatial import distance
-import joblib
-from pandas import DataFrame
-from utils.accessory_lib import system_info
+
 
 elapsed_time = 0
 ref_frame = 0
@@ -62,8 +55,8 @@ num_nb = 10
 data_name = 'data_300W'
 experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
-enable_gaze = False
-
+enable_gaze = True
+enable_log = False
 transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
@@ -111,8 +104,8 @@ image_height, image_width, _ = frame.shape
 
 frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-#fps = video.get(cv2.CAP_PROP_FPS)
 
+#fps = video.get(cv2.CAP_PROP_FPS)
 # record result video
 # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 # writer = cv2.VideoWriter('.' + os.sep + 'night.mp4', fourcc, fps, (frame_width, frame_height))
@@ -120,9 +113,10 @@ frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 
 # logging file threading start
-logging_header = DataFrame(columns=['Time(sec)', 'Ref_Frame', 'Det_Frame', 'ProcessSpeed(FPS)'])
-logging_task = LoggingFile(logging_header, file_name='Logging_Data')
-logging_task.start_logging(period=0.1)
+if enable_log:
+    logging_header = DataFrame(columns=['Time(sec)', 'Ref_Frame', 'Det_Frame', 'ProcessSpeed(FPS)'])
+    logging_task = LoggingFile(logging_header, file_name='Logging_Data')
+    logging_task.start_logging(period=0.1)
 
 font = cv2.FONT_HERSHEY_COMPLEX_SMALL
 det_frame = 0
