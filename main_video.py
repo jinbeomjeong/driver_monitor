@@ -62,6 +62,7 @@ num_nb = 10
 data_name = 'data_300W'
 experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
+enable_gaze = False
 
 transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
@@ -87,11 +88,13 @@ state_dict = torch.load(weight_file, map_location=device)
 landmark_net.load_state_dict(state_dict)
 landmark_net.eval()
 
-gaze_net = L2CS(torchvision.models.resnet.Bottleneck, [3, 4, 6, 3], 90)
-gaze_net = gaze_net.to(device)
-saved_state_dict = torch.load("./L2CS_Net/snapshot/L2CSNet_gaze360.pkl", map_location=device)
-gaze_net.load_state_dict(saved_state_dict)
-gaze_net.eval()
+if enable_gaze:
+    gaze_net = L2CS(torchvision.models.resnet.Bottleneck, [3, 4, 6, 3], 90)
+    gaze_net = gaze_net.to(device)
+    saved_state_dict = torch.load("./L2CS_Net/snapshot/L2CSNet_gaze360.pkl", map_location=device)
+    gaze_net.load_state_dict(saved_state_dict)
+    gaze_net.eval()
+
 softmax = nn.Softmax(dim=1).to(device)
 idx_tensor = [idx for idx in range(90)]
 idx_tensor = torch.FloatTensor(idx_tensor).to(device)
@@ -103,7 +106,7 @@ face_detector = FaceBoxesDetector('FaceBoxes', 'PIPNet/FaceBoxesV2/weights/FaceB
 
 my_thresh = 0.6
 det_box_scale = 1.2
-video = cv2.VideoCapture(0)
+video = cv2.VideoCapture('/home/jinbeom/workspace/videos/daylight.mp4')
 ret, frame = video.read()
 image_height, image_width, _ = frame.shape
 
@@ -143,7 +146,6 @@ while video.isOpened():
             det_ymax = det_ymin + det_height - 1
 
             det_xmin -= int(det_width * (det_box_scale - 1) / 2)
-            # remove a part of top area for alignment, see paper for details
             det_ymin += int(det_height * (det_box_scale - 1) / 2)
             det_xmax += int(det_width * (det_box_scale - 1) / 2)
             det_ymax += int(det_height * (det_box_scale - 1) / 2)
@@ -207,21 +209,20 @@ while video.isOpened():
                 img = transformations(im_pil)
                 img = Variable(img).to(device)
                 img = img.unsqueeze(0)
-
-                # gaze prediction
-                gaze_pitch, gaze_yaw = gaze_net(img)
-                pitch_predicted = softmax(gaze_pitch)
-                yaw_predicted = softmax(gaze_yaw)
-
-                pitch_predicted = torch.sum(pitch_predicted.data[0] * idx_tensor) * 4 - 180
-                yaw_predicted = torch.sum(yaw_predicted.data[0] * idx_tensor) * 4 - 180
-
-                pitch_predicted = pitch_predicted.cpu().detach().numpy() * np.pi / 180.0
-                yaw_predicted = yaw_predicted.cpu().detach().numpy() * np.pi / 180.0
-
                 det_frame += 1
 
-                draw_gaze(det_xmin, det_ymin, det_width, det_height, frame, (pitch_predicted, yaw_predicted), color=(0, 0, 255))
+                # gaze prediction
+                if enable_gaze:
+                    gaze_pitch, gaze_yaw = gaze_net(img)
+                    pitch_predicted = softmax(gaze_pitch)
+                    yaw_predicted = softmax(gaze_yaw)
+
+                    pitch_predicted = torch.sum(pitch_predicted.data[0] * idx_tensor) * 4 - 180
+                    yaw_predicted = torch.sum(yaw_predicted.data[0] * idx_tensor) * 4 - 180
+
+                    pitch_predicted = pitch_predicted.cpu().detach().numpy() * np.pi / 180.0
+                    yaw_predicted = yaw_predicted.cpu().detach().numpy() * np.pi / 180.0
+                    draw_gaze(det_xmin, det_ymin, det_width, det_height, frame, (pitch_predicted, yaw_predicted), color=(0, 0, 255))
 
             cv2.putText(frame, f'{left_eye_ratio:.2f}', (det_xmin, det_ymax+30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
             cv2.putText(frame, f'{right_eye_ratio:.2f}', (det_xmax-50, det_ymax + 30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
