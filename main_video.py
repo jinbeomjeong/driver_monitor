@@ -29,6 +29,17 @@ elapsed_time = 0
 ref_frame = 0
 det_frame = 0
 fps = 0
+input_size = 256
+net_stride = 32
+num_nb = 10
+data_name = 'data_300W'
+experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
+num_lms = 68
+enable_gaze = True
+enable_log = False
+image_scale = 0.5
+offset_height = -100
+offset_width = 0
 
 system_info()
 
@@ -49,14 +60,6 @@ class LoggingFile:
         logging_thread.start()
 
 
-input_size = 256
-net_stride = 32
-num_nb = 10
-data_name = 'data_300W'
-experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
-num_lms = 68
-enable_gaze = True
-enable_log = False
 transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
@@ -99,6 +102,7 @@ face_detector = FaceBoxesDetector('FaceBoxes', 'PIPNet/FaceBoxesV2/weights/FaceB
 my_thresh = 0.6
 det_box_scale = 1.2
 video = cv2.VideoCapture('/home/jinbeom/workspace/videos/daylight.mp4')
+cv2.namedWindow('video', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 ret, frame = video.read()
 image_height, image_width, _ = frame.shape
 
@@ -120,12 +124,18 @@ if enable_log:
 
 font = cv2.FONT_HERSHEY_COMPLEX_SMALL
 det_frame = 0
+image_border = image_scale / 2
 
 while video.isOpened():
     start_time = time.time()
     ret, frame = video.read()
 
     if ret:
+        frame = frame[int(frame_height*image_border)+offset_height:int(frame_height-(frame_height*image_border))+offset_height,
+                int(frame_width*image_border)+offset_width:int(frame_width-(frame_width*image_border))+offset_width]
+
+        frame = cv2.resize(src=frame, dsize=(0, 0), fx=1/image_scale, fy=1/image_scale, interpolation=cv2.INTER_LINEAR)
+
         available_frame = 0
         ref_frame += 1
         detections, _ = face_detector.detect(frame, my_thresh, 1)
@@ -227,7 +237,7 @@ while video.isOpened():
 
         # cv2.imwrite('images/1_out.jpg', image)
         # writer.write(frame)
-        cv2.imshow('frame', frame)
+        cv2.imshow('video', frame)
 
     else: break
 
