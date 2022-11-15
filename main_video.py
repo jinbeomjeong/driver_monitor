@@ -43,8 +43,8 @@ experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
 enable_gaze = True
 enable_log = False
-image_scale = 0.3
-offset_height = -100
+image_scale = 0.1
+offset_height = 0
 offset_width = 0
 
 system_info()
@@ -145,14 +145,13 @@ net.eval()
 cudnn.benchmark = True
 net = net.to(device)
 
-my_thresh = 0.6
 det_box_scale = 1.2
 video = cv2.VideoCapture('/home/jinbeom/workspace/videos/daylight.mp4')
 cv2.namedWindow('video', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 ret, frame = video.read()
 
-frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+frame_width = int((1-image_scale)*video.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int((1-image_scale)*video.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 scale = torch.Tensor([frame_width, frame_height, frame_width, frame_height])
 scale = scale.to(device)
@@ -179,6 +178,11 @@ while video.isOpened():
     ret, frame = video.read()
 
     if ret:
+        frame = frame[int(frame_height*image_border)+offset_height:int(frame_height-(frame_height*image_border))+offset_height,
+                int(frame_width*image_border)+offset_width:int(frame_width-(frame_width*image_border))+offset_width]
+
+        frame = cv2.resize(src=frame, dsize=(frame_width, frame_height), interpolation=cv2.INTER_LINEAR)
+
         img_tensor = np.float32(frame)
         img_tensor -= (104, 117, 123)
         img_tensor = img_tensor.transpose(2, 0, 1)
@@ -206,11 +210,6 @@ while video.isOpened():
         keep = nms(dets, 0.3, force_cpu=False)
         dets = dets[keep, :]
         dets = dets[:750, :]
-
-        #frame = frame[int(frame_height*image_border)+offset_height:int(frame_height-(frame_height*image_border))+offset_height,
-                #int(frame_width*image_border)+offset_width:int(frame_width-(frame_width*image_border))+offset_width]
-
-        #frame = cv2.resize(src=frame, dsize=(0, 0), fx=1/image_scale, fy=1/image_scale, interpolation=cv2.INTER_LINEAR)
 
         available_frame = 0
         ref_frame += 1
