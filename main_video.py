@@ -5,14 +5,20 @@ import torchvision.transforms as transforms
 from scipy.spatial import distance
 from pandas import DataFrame
 from app_utils.accessory_lib import system_info
+import torch.backends.cudnn as cudnn
 
 default_path = os.path.normpath(os.path.abspath(__file__)).split(os.sep)[0:-1]
 facebox_path = default_path[:]
-facebox_path.append('PIPNet/FaceBoxesV2/')
+facebox_path.append('PIPNet/FaceBoxes_PyTorch/')
 facebox_path = '/'.join(facebox_path)
 sys.path.append(facebox_path)
 
-from PIPNet.FaceBoxesV2.faceboxes_detector import FaceBoxesDetector
+from models.faceboxes import FaceBoxes
+from data import cfg
+from utils.box_utils import decode
+from utils.nms_wrapper import nms
+from layers.functions.prior_box import PriorBox
+
 from PIPNet.lib.networks import *
 from PIPNet.lib.functions import *
 
@@ -37,7 +43,7 @@ experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
 enable_gaze = True
 enable_log = False
-image_scale = 0.5
+image_scale = 0.3
 offset_height = -100
 offset_width = 0
 
@@ -97,17 +103,59 @@ if enable_gaze:
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 preprocess = transforms.Compose([transforms.Resize((input_size, input_size)), transforms.ToTensor(), normalize])
 
-face_detector = FaceBoxesDetector('FaceBoxes', 'PIPNet/FaceBoxesV2/weights/FaceBoxesV2.pth', True, device)
+def check_keys(model, pretrained_state_dict):
+    ckpt_keys = set(pretrained_state_dict.keys())
+    model_keys = set(model.state_dict().keys())
+    used_pretrained_keys = model_keys & ckpt_keys
+    unused_pretrained_keys = ckpt_keys - model_keys
+    missing_keys = model_keys - ckpt_keys
+    print('Missing keys:{}'.format(len(missing_keys)))
+    print('Unused checkpoint keys:{}'.format(len(unused_pretrained_keys)))
+    print('Used keys:{}'.format(len(used_pretrained_keys)))
+    assert len(used_pretrained_keys) > 0, 'load NONE from pretrained checkpoint'
+    return True
+
+
+def remove_prefix(state_dict, prefix):
+    ''' Old style model is stored with all names of parameters sharing common prefix 'module.' '''
+    print('remove prefix \'{}\''.format(prefix))
+    f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
+    return {f(key): value for key, value in state_dict.items()}
+
+
+def load_model(model, pretrained_path, load_to_cpu):
+    print('Loading pretrained model from {}'.format(pretrained_path))
+    if load_to_cpu:
+        pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
+    else:
+        device = torch.cuda.current_device()
+        pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage.cuda(device))
+    if "state_dict" in pretrained_dict.keys():
+        pretrained_dict = remove_prefix(pretrained_dict['state_dict'], 'module.')
+    else:
+        pretrained_dict = remove_prefix(pretrained_dict, 'module.')
+    check_keys(model, pretrained_dict)
+    model.load_state_dict(pretrained_dict, strict=False)
+    return model
+
+
+net = FaceBoxes(phase='test', size=None, num_classes=2)    # initialize detector
+net = load_model(net, 'PIPNet/FaceBoxes_PyTorch/weights/Final_FaceBoxes.pth', False)
+net.eval()
+cudnn.benchmark = True
+net = net.to(device)
 
 my_thresh = 0.6
 det_box_scale = 1.2
 video = cv2.VideoCapture('/home/jinbeom/workspace/videos/daylight.mp4')
 cv2.namedWindow('video', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 ret, frame = video.read()
-image_height, image_width, _ = frame.shape
 
 frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
 frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+scale = torch.Tensor([frame_width, frame_height, frame_width, frame_height])
+scale = scale.to(device)
 
 #fps = video.get(cv2.CAP_PROP_FPS)
 # record result video
@@ -131,31 +179,68 @@ while video.isOpened():
     ret, frame = video.read()
 
     if ret:
-        frame = frame[int(frame_height*image_border)+offset_height:int(frame_height-(frame_height*image_border))+offset_height,
-                int(frame_width*image_border)+offset_width:int(frame_width-(frame_width*image_border))+offset_width]
+        img_tensor = np.float32(frame)
+        img_tensor -= (104, 117, 123)
+        img_tensor = img_tensor.transpose(2, 0, 1)
+        img_tensor = torch.from_numpy(img_tensor).unsqueeze(0)
+        img_tensor = img_tensor.to(device)
+        loc, conf = net(img_tensor)
 
-        frame = cv2.resize(src=frame, dsize=(0, 0), fx=1/image_scale, fy=1/image_scale, interpolation=cv2.INTER_LINEAR)
+        priorbox = PriorBox(cfg, image_size=(frame_height, frame_width))
+        priors = priorbox.forward()
+        priors = priors.to(device)
+        prior_data = priors.data
+        boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
+        boxes = boxes * scale
+        boxes = boxes.cpu().numpy()
+        scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
+        inds = np.where(scores > 0.05)[0]
+        boxes = boxes[inds]
+        scores = scores[inds]
+        order = scores.argsort()[::-1][:5000]
+
+        boxes = boxes[order]
+        scores = scores[order]
+
+        dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+        keep = nms(dets, 0.3, force_cpu=False)
+        dets = dets[keep, :]
+        dets = dets[:750, :]
+
+        #frame = frame[int(frame_height*image_border)+offset_height:int(frame_height-(frame_height*image_border))+offset_height,
+                #int(frame_width*image_border)+offset_width:int(frame_width-(frame_width*image_border))+offset_width]
+
+        #frame = cv2.resize(src=frame, dsize=(0, 0), fx=1/image_scale, fy=1/image_scale, interpolation=cv2.INTER_LINEAR)
 
         available_frame = 0
         ref_frame += 1
-        detections, _ = face_detector.detect(frame, my_thresh, 1)
 
-        for i in range(len(detections)):
-            det_xmin = detections[i][2]
-            det_ymin = detections[i][3]
-            det_width = detections[i][4]
-            det_height = detections[i][5]
-            det_xmax = det_xmin + det_width - 1
-            det_ymax = det_ymin + det_height - 1
+        for i, b in enumerate(dets):
+            if b[4] < 0.5:
+                continue
+            text = "{:.3f}".format(b[4])
+            b = list(map(int, b))
+
+            det_xmin = b[0]
+            det_ymin = b[1]
+            det_xmax = b[2]
+            det_ymax = b[3]
+            det_width = det_xmax - det_xmin
+            det_height = det_ymax - det_ymin
+
+            cv2.rectangle(frame, (det_xmin, det_ymin), (det_xmax, det_ymax), (0, 0, 255), 1)
+            cv2.putText(frame, text, (det_xmin, det_ymin+12), font, 0.5, (255, 255, 255))
 
             det_xmin -= int(det_width * (det_box_scale - 1) / 2)
-            det_ymin += int(det_height * (det_box_scale - 1) / 2)
+            det_ymin -= int(det_height * (det_box_scale - 1) / 2)
             det_xmax += int(det_width * (det_box_scale - 1) / 2)
             det_ymax += int(det_height * (det_box_scale - 1) / 2)
+
             det_xmin = max(det_xmin, 0)
             det_ymin = max(det_ymin, 0)
-            det_xmax = min(det_xmax, image_width - 1)
-            det_ymax = min(det_ymax, image_height - 1)
+            det_xmax = min(det_xmax, frame_width - 1)
+            det_ymax = min(det_ymax, frame_height - 1)
+
             det_width = det_xmax - det_xmin + 1
             det_height = det_ymax - det_ymin + 1
             det_crop = frame[det_ymin:det_ymax, det_xmin:det_xmax, :]
