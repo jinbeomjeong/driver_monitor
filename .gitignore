@@ -130,7 +130,14 @@ logging_data
 dataset
 
 # backend network
-PIPNet
+PIPNet/data
+PIPNet/experiments
+PIPNet/FaceBoxes_PyTorch
+PIPNet/FaceBoxesV2
+PIPNet/images
+PIPNet/snapshots
+PIPNet/videos
+PIPNet/
 L2CS_Net
 L2CS-Net
 
