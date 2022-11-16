@@ -1,10 +1,9 @@
-import sys, os, threading
+import sys, os, threading, time, torchvision
 from torch.autograd import Variable
-import torchvision
 import torchvision.transforms as transforms
 from scipy.spatial import distance
 from pandas import DataFrame
-from app_utils.accessory_lib import system_info
+from app_utils.accessory_lib import pytorch_system_info
 import torch.backends.cudnn as cudnn
 
 default_path = os.path.normpath(os.path.abspath(__file__)).split(os.sep)[0:-1]
@@ -31,6 +30,7 @@ from L2CS_Net.model import L2CS
 from L2CS_Net.utils import draw_gaze
 
 
+initial_time = time.time()
 elapsed_time = 0
 ref_frame = 0
 det_frame = 0
@@ -42,12 +42,16 @@ data_name = 'data_300W'
 experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
 enable_gaze = True
-enable_log = False
-image_scale = 0.1
+enable_log = True
+image_scale = 0.0
 offset_height = 0
 offset_width = 0
+det_box_scale = 1.2
+eye_det = 0.15
+cudnn.benchmark = True
+# torch.backends.cuda.matmul.allow_tf32 = True
 
-system_info()
+pytorch_system_info()
 
 
 class LoggingFile:
@@ -57,10 +61,11 @@ class LoggingFile:
         self.logging_file_path = './logging_data/' + logging_file_name + '.csv'
         logging_header.to_csv(self.logging_file_path, mode='a', header=True)
 
+
     def start_logging(self, period=0.1):
         # global logging_data, elapsed_time, ref_frame, det_frame, fps
         logging_data = DataFrame({'1': round(elapsed_time, 2), '2': ref_frame, '3': det_frame, '4': round(fps, 2)}, index=[0])
-        logging_data.to_csv(self.logging_file_path, mode='a', header=False)
+        logging_data.to_csv(self.logging_file_path, mode='a', header=False, index=False)
         logging_thread = threading.Timer(period, self.start_logging, (period, ))
         logging_thread.daemon = True
         logging_thread.start()
@@ -69,16 +74,12 @@ class LoggingFile:
 transformations = transforms.Compose([transforms.Resize(448), transforms.ToTensor(),
                                       transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
-print(torch.backends.cudnn.enabled)
-# torch.backends.cuda.matmul.allow_tf32 = True
-
 meanface_indices, reverse_index1, reverse_index2, max_len = get_meanface(os.path.join('PIPNet/data', data_name,
                                                                                       'meanface.txt'), num_nb)
-
 #resnet18 = models.resnet18(pretrained=True)
 #landmark_net = Pip_resnet18(resnet18, num_nb=num_nb, num_lms=98, input_size=input_size, net_stride=net_stride)
 
-resnet101 = models.resnet101(pretrained=True)
+resnet101 = models.resnet101(weights='ResNet101_Weights.DEFAULT')
 landmark_net = Pip_resnet101(resnet101, num_nb=num_nb, num_lms=num_lms, input_size=input_size, net_stride=net_stride)
 
 device = torch.device("cuda")
@@ -103,6 +104,7 @@ if enable_gaze:
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 preprocess = transforms.Compose([transforms.Resize((input_size, input_size)), transforms.ToTensor(), normalize])
 
+
 def check_keys(model, pretrained_state_dict):
     ckpt_keys = set(pretrained_state_dict.keys())
     model_keys = set(model.state_dict().keys())
@@ -117,7 +119,6 @@ def check_keys(model, pretrained_state_dict):
 
 
 def remove_prefix(state_dict, prefix):
-    ''' Old style model is stored with all names of parameters sharing common prefix 'module.' '''
     print('remove prefix \'{}\''.format(prefix))
     f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
     return {f(key): value for key, value in state_dict.items()}
@@ -142,34 +143,36 @@ def load_model(model, pretrained_path, load_to_cpu):
 net = FaceBoxes(phase='test', size=None, num_classes=2)    # initialize detector
 net = load_model(net, 'PIPNet/FaceBoxes_PyTorch/weights/Final_FaceBoxes.pth', False)
 net.eval()
-cudnn.benchmark = True
 net = net.to(device)
 
-det_box_scale = 1.2
-video = cv2.VideoCapture('/home/jinbeom/workspace/videos/daylight.mp4')
+video = cv2.VideoCapture('/home/jinbeom/Videos/daylight.mp4')
 cv2.namedWindow('video', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 ret, frame = video.read()
 
-frame_width = int((1-image_scale)*video.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int((1-image_scale)*video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-scale = torch.Tensor([frame_width, frame_height, frame_width, frame_height])
+frame_width_resize = int((1-image_scale)*frame_width)
+frame_height_resize = int((1-image_scale)*frame_height)
+
+scale = torch.Tensor([frame_width_resize, frame_height_resize, frame_width_resize, frame_height_resize])
 scale = scale.to(device)
 
-#fps = video.get(cv2.CAP_PROP_FPS)
+# fps = video.get(cv2.CAP_PROP_FPS)
 # record result video
 # fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 # writer = cv2.VideoWriter('.' + os.sep + 'night.mp4', fourcc, fps, (frame_width, frame_height))
-#model = joblib.load('./model.pkl')
+#m odel = joblib.load('./model.pkl')
 
 
-# logging file threading start
+# logging task threading start
 if enable_log:
     logging_header = DataFrame(columns=['Time(sec)', 'Ref_Frame', 'Det_Frame', 'ProcessSpeed(FPS)'])
     logging_task = LoggingFile(logging_header, file_name='Logging_Data')
     logging_task.start_logging(period=0.1)
 
 font = cv2.FONT_HERSHEY_COMPLEX_SMALL
+
 det_frame = 0
 image_border = image_scale / 2
 
@@ -181,7 +184,7 @@ while video.isOpened():
         frame = frame[int(frame_height*image_border)+offset_height:int(frame_height-(frame_height*image_border))+offset_height,
                 int(frame_width*image_border)+offset_width:int(frame_width-(frame_width*image_border))+offset_width]
 
-        frame = cv2.resize(src=frame, dsize=(frame_width, frame_height), interpolation=cv2.INTER_LINEAR)
+        frame = cv2.resize(src=frame, dsize=(frame_width_resize, frame_height_resize), interpolation=cv2.INTER_LINEAR)
 
         img_tensor = np.float32(frame)
         img_tensor -= (104, 117, 123)
@@ -190,7 +193,7 @@ while video.isOpened():
         img_tensor = img_tensor.to(device)
         loc, conf = net(img_tensor)
 
-        priorbox = PriorBox(cfg, image_size=(frame_height, frame_width))
+        priorbox = PriorBox(cfg, image_size=(frame_height_resize, frame_width_resize))
         priors = priorbox.forward()
         priors = priors.to(device)
         prior_data = priors.data
@@ -263,12 +266,12 @@ while video.isOpened():
             eye_y = (lms_pred_merge[(36 * 2) + 1:(48 * 2) + 1:2] * det_height).astype(np.int32) + det_ymin
 
             left_eye_H_dist = distance.euclidean((eye_x[0], eye_y[0]), (eye_x[3], eye_y[3]))
-            left_eye_V_dist = distance.euclidean((eye_x[1], eye_y[1]), (eye_x[5], eye_y[5])) + \
-                              distance.euclidean((eye_x[2], eye_y[2]), (eye_x[4], eye_y[4]))
+            left_eye_V_dist = min(distance.euclidean((eye_x[1], eye_y[1]), (eye_x[5], eye_y[5])),
+                                  distance.euclidean((eye_x[2], eye_y[2]), (eye_x[4], eye_y[4])))
 
             right_eye_H_dist = distance.euclidean((eye_x[6], eye_y[6]), (eye_x[9], eye_y[9]))
-            right_eye_V_dist = distance.euclidean((eye_x[11], eye_y[11]), (eye_x[7], eye_y[7])) + \
-                               distance.euclidean((eye_x[10], eye_y[10]), (eye_x[8], eye_y[8]))
+            right_eye_V_dist = min(distance.euclidean((eye_x[11], eye_y[11]), (eye_x[7], eye_y[7])),
+                                   distance.euclidean((eye_x[10], eye_y[10]), (eye_x[8], eye_y[8])))
 
             left_eye_ratio = left_eye_V_dist / left_eye_H_dist
             right_eye_ratio = right_eye_V_dist / right_eye_H_dist
@@ -278,7 +281,6 @@ while video.isOpened():
             #result_color = (255, 255, 255) if result == True else (0, 0, 255)
             cv2.rectangle(frame, (det_xmin, det_ymin), (det_xmax, det_ymax), (255, 255, 255), 2)
 
-            eye_det = 0.35
             left_eye_color = (0, 255, 0) if left_eye_ratio >= eye_det else (0, 0, 255)
             right_eye_color = (0, 255, 0) if right_eye_ratio >= eye_det else (0, 0, 255)
 
@@ -289,17 +291,17 @@ while video.isOpened():
                     cv2.circle(frame, (eye_x[i], eye_y[i]), 1, right_eye_color, 2)
 
             if left_eye_ratio > eye_det and right_eye_ratio > eye_det:
-                img = frame[det_ymin:det_ymax, det_xmin:det_xmax]
-                img = cv2.resize(img, (224, 224))
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                im_pil = Image.fromarray(img)
-                img = transformations(im_pil)
-                img = Variable(img).to(device)
-                img = img.unsqueeze(0)
                 det_frame += 1
 
-                # gaze prediction
-                if enable_gaze:
+                if enable_gaze: # gaze prediction
+                    img = frame[det_ymin:det_ymax, det_xmin:det_xmax]
+                    img = cv2.resize(img, (224, 224))
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    im_pil = Image.fromarray(img)
+                    img = transformations(im_pil)
+                    img = Variable(img).to(device)
+                    img = img.unsqueeze(0)
+
                     gaze_pitch, gaze_yaw = gaze_net(img)
                     pitch_predicted = softmax(gaze_pitch)
                     yaw_predicted = softmax(gaze_yaw)
@@ -315,9 +317,11 @@ while video.isOpened():
             cv2.putText(frame, f'{right_eye_ratio:.2f}', (det_xmax-50, det_ymax + 30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
         fps = 1.0 / (time.time() - start_time)
-        cv2.putText(frame, f'FPS: {fps:.1f}', (10, 20), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
-        cv2.putText(frame, 'Raw Frame : ' + '%.0f' % ref_frame, (5, 40), font, 1, [0, 0, 255], 1,  cv2.LINE_AA)
-        cv2.putText(frame, 'Det. Frame : ' + '%.0f' % det_frame, (5, 60), font, 1, [0, 0, 255], 1, cv2.LINE_AA)
+        elapsed_time = time.time() - initial_time
+        cv2.putText(frame, f'Elapsed time: {elapsed_time:.1f}', (10, 20), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(frame, f'FPS: {fps:.1f}', (10, 40), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
+        cv2.putText(frame, 'Raw Frame : ' + '%.0f' % ref_frame, (5, 60), font, 1, [0, 0, 255], 1,  cv2.LINE_AA)
+        cv2.putText(frame, 'Det. Frame : ' + '%.0f' % det_frame, (5, 80), font, 1, [0, 0, 255], 1, cv2.LINE_AA)
 
         # cv2.imwrite('images/1_out.jpg', image)
         # writer.write(frame)
