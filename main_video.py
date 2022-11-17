@@ -172,7 +172,6 @@ if enable_log:
     logging_task.start_logging(period=0.1)
 
 font = cv2.FONT_HERSHEY_COMPLEX_SMALL
-
 det_frame = 0
 image_border = image_scale / 2
 
@@ -258,6 +257,7 @@ while video.isOpened():
             tmp_nb_y = lms_pred_nb_y[reverse_index1, reverse_index2].view(num_lms, max_len)
             tmp_x = torch.mean(torch.cat((lms_pred_x, tmp_nb_x), dim=1), dim=1).view(-1, 1)
             tmp_y = torch.mean(torch.cat((lms_pred_y, tmp_nb_y), dim=1), dim=1).view(-1, 1)
+
             lms_pred_merge = torch.cat((tmp_x, tmp_y), dim=1).flatten()
             lms_pred = lms_pred.cpu().numpy()
             lms_pred_merge = lms_pred_merge.cpu().numpy()
@@ -275,10 +275,7 @@ while video.isOpened():
 
             left_eye_ratio = left_eye_V_dist / left_eye_H_dist
             right_eye_ratio = right_eye_V_dist / right_eye_H_dist
-            #result = model.predict(np.array([left_eye_H_dist, left_eye_V_dist, right_eye_H_dist, right_eye_V_dist]).reshape(1, -1), num_iteration=model.best_iteration_)
 
-
-            #result_color = (255, 255, 255) if result == True else (0, 0, 255)
             cv2.rectangle(frame, (det_xmin, det_ymin), (det_xmax, det_ymax), (255, 255, 255), 2)
 
             left_eye_color = (0, 255, 0) if left_eye_ratio >= eye_det else (0, 0, 255)
