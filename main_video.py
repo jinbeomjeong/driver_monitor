@@ -1,10 +1,12 @@
-import sys, os, threading, time, torchvision
-from torch.autograd import Variable
+import sys, os, threading, time, torchvision, can, cantools
+import torch.backends.cudnn as cudnn
 import torchvision.transforms as transforms
 from scipy.spatial import distance
 from pandas import DataFrame
 from app_utils.accessory_lib import pytorch_system_info
-import torch.backends.cudnn as cudnn
+from torch.autograd import Variable
+from app_utils.tcp_lib import TcpServerCom
+from can.interfaces.pcan import PcanBus as pcan
 
 default_path = os.path.normpath(os.path.abspath(__file__)).split(os.sep)[0:-1]
 facebox_path = default_path[:]
@@ -41,8 +43,6 @@ num_nb = 10
 data_name = 'data_300W'
 experiment_name = 'pip_32_16_60_r101_l2_l1_10_1_nb10'
 num_lms = 68
-enable_gaze = True
-enable_log = True
 image_scale = 0.0
 offset_height = 0
 offset_width = 0
@@ -50,6 +50,11 @@ det_box_scale = 1.2
 eye_det = 0.15
 cudnn.benchmark = True
 # torch.backends.cuda.matmul.allow_tf32 = True
+enable_gaze = True
+enable_log = False
+enable_tcp = False
+enable_record = False
+enable_can_com = True
 
 pytorch_system_info()
 
@@ -145,7 +150,9 @@ net = load_model(net, 'PIPNet/FaceBoxes_PyTorch/weights/Final_FaceBoxes.pth', Fa
 net.eval()
 net = net.to(device)
 
-video = cv2.VideoCapture('/home/jinbeom/Videos/daylight.mp4')
+# video = cv2.VideoCapture('/mnt/data/video/daylight.mp4')
+video = cv2.VideoCapture(0)
+
 cv2.namedWindow('video', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 ret, frame = video.read()
 
@@ -171,9 +178,21 @@ if enable_log:
     logging_task = LoggingFile(logging_header, file_name='Logging_Data')
     logging_task.start_logging(period=0.1)
 
+if enable_tcp:
+    server = TcpServerCom(addr='192.168.137.81', port=6340)
+
+if enable_can_com:
+    bus = pcan(bitrate=500000)
+
+clu_db = cantools.database.load_file('./adas_can_db.dbc').get_message_by_name('CLU_VCU_2A1')
+
 font = cv2.FONT_HERSHEY_COMPLEX_SMALL
 det_frame = 0
 image_border = image_scale / 2
+
+if enable_record:
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter('result_video.mp4', fourcc, 30, (frame_width, frame_height))
 
 while video.isOpened():
     start_time = time.time()
@@ -287,7 +306,14 @@ while video.isOpened():
                 else:
                     cv2.circle(frame, (eye_x[i], eye_y[i]), 1, right_eye_color, 2)
 
-            if left_eye_ratio > eye_det and right_eye_ratio > eye_det:
+            drowsy_state = left_eye_ratio > eye_det and right_eye_ratio > eye_det
+
+            if enable_can_com:
+                dsm_can_payload = clu_db.encode({'dsm': int(not drowsy_state)})
+                can_message = can.Message(arbitration_id=clu_db.frame_id, is_extended_id=False, data=dsm_can_payload)
+                bus.send(can_message)
+
+            if drowsy_state:
                 det_frame += 1
 
                 if enable_gaze: # gaze prediction
@@ -309,20 +335,27 @@ while video.isOpened():
                     pitch_predicted = pitch_predicted.cpu().detach().numpy() * np.pi / 180.0
                     yaw_predicted = yaw_predicted.cpu().detach().numpy() * np.pi / 180.0
                     draw_gaze(det_xmin, det_ymin, det_width, det_height, frame, (pitch_predicted, yaw_predicted), color=(0, 0, 255))
+                    tcp_message = f'{pitch_predicted:.2f}' + ',' + f'{yaw_predicted:.2f}'
+
+                    if enable_tcp:
+                        server.send_msg(tcp_message)
 
             cv2.putText(frame, f'{left_eye_ratio:.2f}', (det_xmin, det_ymax+30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
             cv2.putText(frame, f'{right_eye_ratio:.2f}', (det_xmax-50, det_ymax + 30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
         fps = 1.0 / (time.time() - start_time)
         elapsed_time = time.time() - initial_time
-        cv2.putText(frame, f'Elapsed time: {elapsed_time:.1f}', (10, 20), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
-        cv2.putText(frame, f'FPS: {fps:.1f}', (10, 40), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
-        cv2.putText(frame, 'Raw Frame : ' + '%.0f' % ref_frame, (5, 60), font, 1, [0, 0, 255], 1,  cv2.LINE_AA)
-        cv2.putText(frame, 'Det. Frame : ' + '%.0f' % det_frame, (5, 80), font, 1, [0, 0, 255], 1, cv2.LINE_AA)
+        #cv2.putText(frame, f'Elapsed time: {elapsed_time:.1f}', (10, 20), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
+        #cv2.putText(frame, f'FPS: {fps:.1f}', (10, 40), font, 1, (0, 255, 0), 1, cv2.LINE_AA)
+        #cv2.putText(frame, 'Raw Frame : ' + '%.0f' % ref_frame, (5, 60), font, 1, [0, 0, 255], 1,  cv2.LINE_AA)
+        #cv2.putText(frame, 'Det. Frame : ' + '%.0f' % det_frame, (5, 80), font, 1, [0, 0, 255], 1, cv2.LINE_AA)
 
         # cv2.imwrite('images/1_out.jpg', image)
         # writer.write(frame)
         cv2.imshow('video', frame)
+
+        if enable_record:
+            writer.write(frame)
 
     else: break
 
