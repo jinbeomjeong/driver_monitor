@@ -49,10 +49,10 @@ offset_width = 0
 det_box_scale = 1.2
 eye_det = 0.15
 cudnn.benchmark = True
-# torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
 enable_gaze = True
 enable_log = False
-enable_tcp = False
+enable_tcp = True
 enable_record = False
 enable_can_com = True
 
@@ -167,10 +167,8 @@ scale = scale.to(device)
 
 # fps = video.get(cv2.CAP_PROP_FPS)
 # record result video
-# fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-# writer = cv2.VideoWriter('.' + os.sep + 'night.mp4', fourcc, fps, (frame_width, frame_height))
-#m odel = joblib.load('./model.pkl')
 
+#model = joblib.load('./model.pkl')
 
 # logging task threading start
 if enable_log:
@@ -179,12 +177,11 @@ if enable_log:
     logging_task.start_logging(period=0.1)
 
 if enable_tcp:
-    server = TcpServerCom(addr='192.168.137.81', port=6340)
+    server = TcpServerCom(addr='192.168.137.68', port=6340)
 
 if enable_can_com:
     bus = pcan(bitrate=500000)
-
-clu_db = cantools.database.load_file('./adas_can_db.dbc').get_message_by_name('CLU_VCU_2A1')
+    clu_db = cantools.database.load_file('./adas_can_db.dbc').get_message_by_name('CLU_VCU_2A1')
 
 font = cv2.FONT_HERSHEY_COMPLEX_SMALL
 det_frame = 0
@@ -309,7 +306,7 @@ while video.isOpened():
             drowsy_state = left_eye_ratio > eye_det and right_eye_ratio > eye_det
 
             if enable_can_com:
-                dsm_can_payload = clu_db.encode({'dsm': int(not drowsy_state)})
+                dsm_can_payload = clu_db.encode({'dsm': int(left_eye_ratio < eye_det and right_eye_ratio < eye_det)})
                 can_message = can.Message(arbitration_id=clu_db.frame_id, is_extended_id=False, data=dsm_can_payload)
                 bus.send(can_message)
 
@@ -340,8 +337,8 @@ while video.isOpened():
                     if enable_tcp:
                         server.send_msg(tcp_message)
 
-            cv2.putText(frame, f'{left_eye_ratio:.2f}', (det_xmin, det_ymax+30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
-            cv2.putText(frame, f'{right_eye_ratio:.2f}', (det_xmax-50, det_ymax + 30), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
+            cv2.putText(frame, f'{left_eye_ratio:.2f}', (det_xmin, det_ymax+30), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
+            cv2.putText(frame, f'{right_eye_ratio:.2f}', (det_xmax-50, det_ymax + 30), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
 
         fps = 1.0 / (time.time() - start_time)
         elapsed_time = time.time() - initial_time
