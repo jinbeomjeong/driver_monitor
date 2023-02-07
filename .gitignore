@@ -142,3 +142,5 @@ L2CS_Net
 # pycharm environment
 .idea
 
+# result data
+result
